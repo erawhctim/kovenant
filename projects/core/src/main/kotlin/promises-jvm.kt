@@ -26,11 +26,17 @@ import nl.komponents.kovenant.unsafe.hasUnsafe
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReferenceFieldUpdater
 
+internal fun <V, E: Exception> concretePromiseE(context: Context, callable: () -> V): Promise<V, E>
+        = TaskPromiseE(context, callable)
+
 internal fun <V> concretePromise(context: Context, callable: () -> V): Promise<V, Exception>
-        = TaskPromise(context, callable)
+    = TaskPromise(context, callable)
+
+internal fun <V, R, E: Exception> concretePromiseE(context: Context, promise: Promise<V, E>, callable: (V) -> R): Promise<R, E>
+        = ThenPromiseE(context, promise, callable)
 
 internal fun <V, R> concretePromise(context: Context, promise: Promise<V, Exception>, callable: (V) -> R): Promise<R, Exception>
-        = ThenPromise(context, promise, callable)
+    = ThenPromise(context, promise, callable)
 
 internal fun <V, E> concreteSuccessfulPromise(context: Context, value: V): Promise<V, E> = SuccessfulPromise(context, value)
 
@@ -127,6 +133,73 @@ private class ThenPromise<V, R>(context: Context,
 
 }
 
+private class ThenPromiseE<V, R, E: Exception>(context: Context,
+                                              promise: Promise<V, E>,
+                                              callable: (V) -> R) :
+    SelfResolvingPromise<R, E>(context),
+    CancelablePromise<R, E> {
+
+
+    //need to hold the task to be able to cancel
+    private @Volatile var task: (() -> Unit)? = null
+
+    init {
+        if (promise.isDone()) {
+            if (promise.isSuccess()) {
+                schedule(context, promise.get(), callable)
+            } else {
+                reject(promise.getError())
+            }
+        } else {
+            triggered(callable, context, promise)
+        }
+    }
+
+    private fun triggered(callable: (V) -> R, context: Context, promise: Promise<V, E>) {
+        promise.success(DirectDispatcherContext) {
+            schedule(context, it, callable)
+        }
+
+        promise.fail(DirectDispatcherContext) {
+            reject(it)
+        }
+    }
+
+    private fun schedule(context: Context, value: V, callable: (V) -> R) {
+        val wrapper = {
+            try {
+                val result = callable(value)
+                resolve(result)
+            } catch(e: Exception) {
+                reject(e as E)
+            } finally {
+                //avoid leaking memory after a reject/resolve
+                task = null
+            }
+        }
+        task = wrapper
+        context.workerContext.offer(wrapper)
+    }
+
+
+    override fun cancel(error: E): Boolean {
+        val wrapper = task
+        if (wrapper != null) {
+            task = null //avoid memory leaking
+            context.workerContext.dispatcher.tryCancel(wrapper)
+
+
+            if (trySetFailResult(error)) {
+                fireFail(error)
+                return true
+            }
+        }
+
+        return false
+    }
+
+}
+
 private class TaskPromise<V>(context: Context, callable: () -> V) :
         SelfResolvingPromise<V, Exception>(context),
         CancelablePromise<V, Exception> {
@@ -165,7 +238,63 @@ private class TaskPromise<V>(context: Context, callable: () -> V) :
     }
 }
 
+private class TaskPromiseE<V, E: Exception>(context: Context, callable: () -> V) :
+    SelfResolvingPromise<V, E>(context),
+    CancelablePromise<V, E> {
+    private @Volatile var task: (() -> Unit)?
+
+    init {
+        val wrapper = {
+            try {
+                val result = callable()
+                resolve(result)
+            } catch(e: Exception) {
+                reject(e as E)
+            } finally {
+                //avoid leaking memory after a reject/resolve
+                task = null
+            }
+        }
+        task = wrapper
+        context.workerContext.offer(wrapper)
+    }
+
+    override fun cancel(error: E): Boolean {
+        val wrapper = task
+        if (wrapper != null) {
+            task = null //avoid memory leaking
+            context.workerContext.dispatcher.tryCancel(wrapper)
+
+
+            if (trySetFailResult(error)) {
+                fireFail(error)
+                return true
+            }
+        }
+
+        return false
+    }
+}
+
 private abstract class SelfResolvingPromise<V, E>(context: Context) : AbstractPromise<V, E>(context) {
+    protected fun resolve(value: V) {
+        if (trySetSuccessResult(value)) {
+            fireSuccess(value)
+        }
+        //no need to report multiple completion here.
+        //manage this ourselves, can't happen
+    }
+
+    protected fun reject(error: E) {
+        if (trySetFailResult(error)) {
+            fireFail(error)
+        }
+        //no need to report multiple completion here.
+        //manage this ourselves, can't happen
+    }
+}
+
+private abstract class SelfResolvingPromiseE<V, E: Exception>(context: Context) : AbstractPromise<V, E>(context) {
     protected fun resolve(value: V) {
         if (trySetSuccessResult(value)) {
             fireSuccess(value)

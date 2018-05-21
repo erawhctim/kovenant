@@ -23,6 +23,7 @@ package examples.flatMap
 
 import nl.komponents.kovenant.Promise
 import nl.komponents.kovenant.functional.bind
+import nl.komponents.kovenant.functional.bindE
 
 fun main(args: Array<String>) {
 
@@ -42,4 +43,21 @@ fun divide(a: Int, b: Int): Promise<Int, Exception> {
         Promise.ofSuccess(a / b)
     }
 }
+
+fun test() {
+
+    val p1: Promise<Unit, AppError> = Promise.ofE(Unit)
+
+    val p2: Promise<String, AppError> = Promise.ofSuccess("String")
+
+    val p3: Promise<String, AppError> = p1 bindE { p2 }
+
+    p3 success {
+
+    } fail { e: AppError ->
+
+    }
+}
+
+data class AppError(val errorCode: Int): Exception()
 

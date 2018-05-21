@@ -36,6 +36,8 @@ import nl.komponents.kovenant.*
  */
 infix fun <V, R> Promise<V, Exception>.map(fn: (V) -> R): Promise<R, Exception> = then(fn)
 
+infix fun <V, R, E: Exception> Promise<V, E>.mapE(fn: (V) -> R): Promise<R, E> = thenE(fn)
+
 /**
  * Asynchronously map the success value of a [Promise] and returns a new [Promise] with the transformed value.
  *
@@ -49,6 +51,8 @@ infix fun <V, R> Promise<V, Exception>.map(fn: (V) -> R): Promise<R, Exception> 
  * @param bind the transform function.
  */
 fun <V, R> Promise<V, Exception>.map(context: Context, bind: (V) -> R): Promise<R, Exception> = then(context, bind)
+
+fun <V, R, E: Exception> Promise<V, E>.mapE(context: Context, bind: (V) -> R): Promise<R, E> = thenE(context, bind)
 
 
 /**
@@ -64,6 +68,8 @@ fun <V, R> Promise<V, Exception>.map(context: Context, bind: (V) -> R): Promise<
  * @param bind the transform function.
  */
 infix fun <V, R> Promise<V, Exception>.bind(fn: (V) -> Promise<R, Exception>): Promise<R, Exception> = bind(context, fn)
+
+infix fun <V, R, E: Exception> Promise<V, E>.bindE(fn: (V) -> Promise<R, E>): Promise<R, E> = bindE(context, fn)
 
 /**
  * Asynchronously bind the success value of a [Promise] and returns a new [Promise] with the transformed value.
@@ -100,10 +106,32 @@ fun <V, R> Promise<V, Exception>.bind(context: Context, fn: (V) -> Promise<R, Ex
     return deferred.promise
 }
 
+fun <V, R, E: Exception> Promise<V, E>.bindE(context: Context, fn: (V) -> Promise<R, E>): Promise<R, E> {
+    if (isDone()) when {
+        isSuccess() -> {
+            val deferred = deferred<R, E>(context)
+            bindAsyncE(fn, context, deferred, get())
+            return deferred.promise
+        }
+        isFailure() -> return Promise.ofFail(getError(), context)
+    }
+
+    val deferred = deferred<R, E>(context)
+    success {
+        value ->
+        bindAsyncE(fn, context, deferred, value)
+    }
+    fail {
+        deferred reject it
+    }
+
+    return deferred.promise
+}
+
 private fun <R, V> bindAsync(bind: (V) -> Promise<R, Exception>,
-                                         context: Context,
-                                         deferred: Deferred<R, Exception>,
-                                         value: V) {
+                             context: Context,
+                             deferred: Deferred<R, Exception>,
+                             value: V) {
     context.workerContext.offer {
         try {
             val p = bind(value)
@@ -112,6 +140,22 @@ private fun <R, V> bindAsync(bind: (V) -> Promise<R, Exception>,
         } catch (e: Exception) {
             //just like map/then consider bind exception as rejection
             deferred reject e
+        }
+    }
+}
+
+private fun <R, V, E: Exception> bindAsyncE(bind: (V) -> Promise<R, E>,
+                                           context: Context,
+                                           deferred: Deferred<R, E>,
+                                           value: V) {
+    context.workerContext.offer {
+        try {
+            val p = bind(value)
+            p success { deferred resolve it }
+            p fail { deferred reject it }
+        } catch (e: Exception) {
+            //just like map/then consider bind exception as rejection
+            deferred reject e as E
         }
     }
 }
@@ -127,6 +171,10 @@ private fun <R, V> bindAsync(bind: (V) -> Promise<R, Exception>,
  */
 infix fun <V, R> Promise<V, Exception>.apply(promise: Promise<(V) -> R, Exception>): Promise<R, Exception> {
     return this.apply(this.context, promise)
+}
+
+infix fun <V, R, E: Exception> Promise<V, E>.applyE(promise: Promise<(V) -> R, E>): Promise<R, E> {
+    return this.applyE(this.context, promise)
 }
 
 
@@ -160,6 +208,26 @@ fun <V, R> Promise<V, Exception>.apply(context: Context, promise: Promise<(V) ->
     return deferred.promise
 }
 
+fun <V, R, E: Exception> Promise<V, E>.applyE(context: Context, promise: Promise<(V) -> R, E>): Promise<R, E> {
+    if (isDone()) when {
+        isDone() -> {
+            val deferred = deferred<R, E>(context)
+            applyAsyncE(promise, context, deferred, get())
+            return deferred.promise
+        }
+        isFailure() -> return Promise.ofFail(getError(), context)
+    }
+
+    val deferred = deferred<R, E>(context)
+    success {
+        value ->
+        applyAsyncE(promise, context, deferred, value)
+    }
+    fail { deferred reject it }
+
+    return deferred.promise
+}
+
 private fun <R, V> applyAsync(promise: Promise<(V) -> R, Exception>, context: Context, deferred: Deferred<R, Exception>, value: V) {
     if (promise.isDone()) when {
         promise.isSuccess() -> return applyAsync(context, deferred, promise.get(), value)
@@ -173,12 +241,35 @@ private fun <R, V> applyAsync(promise: Promise<(V) -> R, Exception>, context: Co
     promise fail { deferred reject it }
 }
 
+private fun <R, V, E: Exception> applyAsyncE(promise: Promise<(V) -> R, E>, context: Context, deferred: Deferred<R, E>, value: V) {
+    if (promise.isDone()) when {
+        promise.isSuccess() -> return applyAsyncE(context, deferred, promise.get(), value)
+        promise.isFailure() -> return deferred reject promise.getError()
+    }
+
+    promise success {
+        fn ->
+        applyAsyncE(context, deferred, fn, value)
+    }
+    promise fail { deferred reject it }
+}
+
 private fun <R, V> applyAsync(context: Context, deferred: Deferred<R, Exception>, fn: (V) -> R, value: V) {
     context.workerContext.offer {
         try {
             deferred resolve fn(value)
         } catch (e: Exception) {
             deferred reject e
+        }
+    }
+}
+
+private fun <R, V, E: Exception> applyAsyncE(context: Context, deferred: Deferred<R, E>, fn: (V) -> R, value: V) {
+    context.workerContext.offer {
+        try {
+            deferred resolve fn(value)
+        } catch (e: Exception) {
+            deferred reject e as E
         }
     }
 }

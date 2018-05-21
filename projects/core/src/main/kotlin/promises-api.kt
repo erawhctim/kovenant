@@ -102,12 +102,17 @@ interface CancelablePromise<V, E> : Promise<V, E> {
  */
 interface Promise<out V, out E> {
     companion object {
+
         /**
          * Takes any value `V` and wraps it as a successfully resolved promise.
          *
          * @param context the Context associated with the promise
          * @param value the value to wrap into a Promise<V, Exception>
          */
+        fun <V, E> ofE(value: V, context: Context = Kovenant.context): Promise<V, E> {
+            return concreteSuccessfulPromise(context, value)
+        }
+
         fun <V> of(value: V, context: Context = Kovenant.context): Promise<V, Exception> {
             return concreteSuccessfulPromise(context, value)
         }
@@ -288,8 +293,12 @@ fun <V, E> deferred(context: Context = Kovenant.context, onCancelled: (E) -> Uni
  * @param context the context on which the task is executed and the [Promise] is tied to. `Kovenant.context` by default.
  * @return returns a [Promise] of inferred success type [V] and failure type [Exception]
  */
+@Deprecated("async is a keyword, favor task instead", ReplaceWith("task(context, body)")) fun <V, E: Exception> asyncE(context: Context = Kovenant.context,
+                                                                                                        body: () -> V): Promise<V, E> = taskE(context, body)
+
 @Deprecated("async is a keyword, favor task instead", ReplaceWith("task(context, body)")) fun <V> async(context: Context = Kovenant.context,
                                                                                                         body: () -> V): Promise<V, Exception> = task(context, body)
+
 
 /**
  * Executes the given task on the work [DispatcherContext] of provided [Context] and returns a [Promise].
@@ -299,6 +308,9 @@ fun <V, E> deferred(context: Context = Kovenant.context, onCancelled: (E) -> Uni
  * @param context the context on which the task is executed and the [Promise] is tied to. `Kovenant.context` by default.
  * @return returns a [Promise] of inferred success type [V] and failure type [Exception]
  */
+@JvmOverloads fun <V, E: Exception> taskE(context: Context = Kovenant.context,
+                           body: () -> V): Promise<V, E> = concretePromiseE(context, body)
+
 @JvmOverloads fun <V> task(context: Context = Kovenant.context,
                            body: () -> V): Promise<V, Exception> = concretePromise(context, body)
 
@@ -314,6 +326,10 @@ fun <V, E> deferred(context: Context = Kovenant.context, onCancelled: (E) -> Uni
  *
  * @param bind the transform function.
  */
+infix fun <V, R, E: Exception> Promise<V, E>.thenE(bind: (V) -> R): Promise<R, E> {
+    return concretePromiseE(context, this, bind)
+}
+
 infix fun <V, R> Promise<V, Exception>.then(bind: (V) -> R): Promise<R, Exception> {
     return concretePromise(context, this, bind)
 }
@@ -330,6 +346,10 @@ infix fun <V, R> Promise<V, Exception>.then(bind: (V) -> R): Promise<R, Exceptio
  * @param context the on which the bind and returned Promise operate
  * @param bind the transform function.
  */
+fun <V, R, E: Exception> Promise<V, E>.thenE(context: Context, bind: (V) -> R): Promise<R, E> {
+    return concretePromiseE(context, this, bind)
+}
+
 fun <V, R> Promise<V, Exception>.then(context: Context, bind: (V) -> R): Promise<R, Exception> {
     return concretePromise(context, this, bind)
 }
@@ -346,13 +366,19 @@ fun <V, R> Promise<V, Exception>.then(context: Context, bind: (V) -> R): Promise
  *
  * @param bind the transform function.
  */
-infix inline fun <V, R> Promise<V, Exception>.thenApply(
-        crossinline bind: V.() -> R): Promise<R, Exception> = then { it.bind() }
+infix inline fun <V, R, E: Exception> Promise<V, E>.thenApplyE(
+        crossinline bind: V.() -> R): Promise<R, E> = thenE { it.bind() }
 
+infix inline fun <V, R> Promise<V, Exception>.thenApply(
+    crossinline bind: V.() -> R): Promise<R, Exception> = then { it.bind() }
+
+@Deprecated("renamed to 'thenApplyE'", ReplaceWith("thenApplyE(bind)"))
+infix inline fun <V, R, E: Exception> Promise<V, E>.thenUseE(
+        crossinline bind: V.() -> R): Promise<R, E> = thenE { it.bind() }
 
 @Deprecated("renamed to 'thenApply'", ReplaceWith("thenApply(bind)"))
 infix inline fun <V, R> Promise<V, Exception>.thenUse(
-        crossinline bind: V.() -> R): Promise<R, Exception> = then { it.bind() }
+    crossinline bind: V.() -> R): Promise<R, Exception> = then { it.bind() }
 
 /**
  * Transforms any `Promise<V, E>` into a Promise<Unit, Unit>.
